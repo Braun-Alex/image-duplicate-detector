@@ -1,25 +1,40 @@
 import os
 import requests
+import json
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 import cv2
+import tensorflow as tf
 
 IMAGE_PIXELS = 224
 IMAGE_CHANNELS = 3
 
 
-def process_dataset(json_dataset, predict_target):
-    image_pair_urls = [(image_pair['representativeData']['image1']['imageUrl'],
-                        image_pair['representativeData']['image2']['imageUrl'])
-                       for image_pair in json_dataset['data']['results']]
+def get_dataset_length(dataset_path):
+    with open(dataset_path) as dataset:
+        network_dataset = json.load(dataset)
+    return len(network_dataset['data']['results'])
 
+
+def process_dataset(json_dataset, predict_target, start_index=None, end_index=None):
     answers = []
 
     if not predict_target:
-        answers = [int(image_pair['answers'][0]['answer'][0]['id']) for image_pair in json_dataset['data']['results']]
+        image_pair_urls = [(image_pair['representativeData']['image1']['imageUrl'],
+                            image_pair['representativeData']['image2']['imageUrl'])
+                           for image_pair in json_dataset['data']['results']]
+
+        answers = [int(image_pair['answers'][0]['answer'][0]['id']) for image_pair
+                   in json_dataset['data']['results']]
         answers = np.array(answers, dtype='int')
-    image_pairs = process_images(image_pair_urls)
+
+    else:
+        image_pair_urls = [(image_pair['representativeData']['image1']['imageUrl'],
+                            image_pair['representativeData']['image2']['imageUrl'])
+                           for image_pair in json_dataset['data']['results']]
+
+    image_pairs = process_images(image_pair_urls[start_index:end_index])
 
     return image_pairs, answers
 
@@ -49,20 +64,25 @@ def load_and_preprocess_image(url, new_size=(IMAGE_PIXELS, IMAGE_PIXELS)):
 
 
 def process_images(url_pairs):
-    first_urls, second_urls = zip(*url_pairs)
+    left_urls, right_urls = zip(*url_pairs)
 
     with ThreadPoolExecutor(max_workers=os.cpu_count()) as executor:
-        first_images = np.array(list(executor.map(load_and_preprocess_image, first_urls)))
-        second_images = np.array(list(executor.map(load_and_preprocess_image, second_urls)))
+        left_images = np.array(list(executor.map(load_and_preprocess_image, left_urls)))
+        right_images = np.array(list(executor.map(load_and_preprocess_image, right_urls)))
 
-    first_images = np.vstack(first_images)
-    second_images = np.vstack(second_images)
+    left_images = np.vstack(left_images)
+    right_images = np.vstack(right_images)
 
-    return [first_images, second_images]
+    return [left_images, right_images]
 
 
 def save_predictions(json_dataset, predictions, predictions_path):
-    task_ids = [image_pair['taskId'] for image_pair in json_dataset['data']['results']]
+    with open(json_dataset) as dataset:
+        network_dataset = json.load(dataset)
+
+    task_ids = [image_pair['taskId'] for image_pair in network_dataset['data']['results']]
+
+    predictions = tf.round(np.array(predictions).flatten()).numpy().astype(int)
 
     predictions_df = pd.DataFrame({
         'taskId': task_ids,
